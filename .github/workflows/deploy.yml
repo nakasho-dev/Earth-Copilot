@@ -260,7 +260,7 @@ jobs:
               --max-replicas 3 \
               --cpu 1.0 \
               --memory 2.0Gi \
-              --set-env-vars "${ENV_VARS[@]}" \
+              --env-vars "${ENV_VARS[@]}" \
               --output none
 
             # Grant AcrPull role to the Container App's managed identity
