@@ -146,15 +146,45 @@ jobs:
           RG="${RG:-rg-${PROJECT}}"
           echo "resource_group=$RG" >> "$GITHUB_OUTPUT"
 
+          # ACR
           REGISTRY=$(az acr list --resource-group "$RG" --query "[0].name" -o tsv 2>/dev/null)
           echo "registry=$REGISTRY" >> "$GITHUB_OUTPUT"
 
-          CA_NAME=$(az containerapp list --resource-group "$RG" \
-            --query "[?contains(name,'api') || contains(name,'backend')].name | [0]" -o tsv 2>/dev/null)
-          if [[ -z "$CA_NAME" ]]; then
-            CA_NAME=$(az containerapp list --resource-group "$RG" --query "[0].name" -o tsv 2>/dev/null)
+          # Container Apps Environment (needed for initial create)
+          CAE=$(az containerapp env list --resource-group "$RG" --query "[0].name" -o tsv 2>/dev/null)
+          echo "cae=$CAE" >> "$GITHUB_OUTPUT"
+
+          # Derive resource token from CAE name (cae-<token>)
+          TOKEN="${CAE#cae-}"
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+
+          # Container App (may not exist on first deploy)
+          CA_NAME=$(az containerapp list --resource-group "$RG" --query "[0].name" -o tsv 2>/dev/null)
+          echo "container_app=${CA_NAME}" >> "$GITHUB_OUTPUT"
+
+          # Expected name following Bicep convention: ca-web-<token>
+          echo "container_app_expected=ca-web-${TOKEN}" >> "$GITHUB_OUTPUT"
+
+          # Lookup env vars needed to configure the Container App
+          OAI_ENDPOINT=$(az cognitiveservices account list --resource-group "$RG" \
+            --query "[?kind=='AIServices'].properties.endpoint | [0]" -o tsv 2>/dev/null || true)
+          echo "oai_endpoint=${OAI_ENDPOINT}" >> "$GITHUB_OUTPUT"
+
+          APPINS_CS=$(az resource list --resource-group "$RG" \
+            --resource-type "Microsoft.Insights/components" --query "[0].name" -o tsv 2>/dev/null || true)
+          if [[ -n "$APPINS_CS" ]]; then
+            CS=$(az monitor app-insights component show \
+              --app "$APPINS_CS" --resource-group "$RG" \
+              --query "connectionString" -o tsv 2>/dev/null || true)
+            echo "appinsights_cs=${CS}" >> "$GITHUB_OUTPUT"
           fi
-          echo "container_app=$CA_NAME" >> "$GITHUB_OUTPUT"
+
+          MAPS_NAME=$(az maps account list --resource-group "$RG" --query "[0].name" -o tsv 2>/dev/null || true)
+          if [[ -n "$MAPS_NAME" ]]; then
+            MAPS_KEY=$(az maps account keys list --name "$MAPS_NAME" --resource-group "$RG" \
+              --query "primaryKey" -o tsv 2>/dev/null || true)
+            echo "maps_key=${MAPS_KEY}" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build Docker image in ACR
         run: |
@@ -163,14 +193,8 @@ jobs:
           REGISTRY="${{ steps.res.outputs.registry }}"
 
           # Temporarily open ACR firewall so ACR Tasks can run
-          # (Private endpoint is on, defaultAction=Deny by default)
           echo "Opening ACR firewall for build..."
-          az acr update \
-            --name "$REGISTRY" \
-            --default-action Allow \
-            --output none
-
-          # Small wait for firewall rule to propagate
+          az acr update --name "$REGISTRY" --default-action Allow --output none
           sleep 15
 
           # Build via ACR Tasks (runs inside Azure)
@@ -183,56 +207,82 @@ jobs:
 
           # Re-lock ACR firewall regardless of build result
           echo "Re-locking ACR firewall..."
-          az acr update \
-            --name "$REGISTRY" \
-            --default-action Deny \
-            --output none
+          az acr update --name "$REGISTRY" --default-action Deny --output none
 
-          # Fail now if build failed
           if [[ "${BUILD_FAILED:-}" == "true" ]]; then
-            echo "ACR build failed"
-            exit 1
+            echo "ACR build failed"; exit 1
           fi
 
-      - name: "Update Container App (atomic: image + env vars)"
+      - name: "Create or Update Container App"
         id: deploy-ca
         run: |
           RG="${{ steps.res.outputs.resource_group }}"
-          CA="${{ steps.res.outputs.container_app }}"
           REGISTRY="${{ steps.res.outputs.registry }}"
+          CAE="${{ steps.res.outputs.cae }}"
+          OAI_EP="${{ steps.res.outputs.oai_endpoint }}"
+          APPINS="${{ steps.res.outputs.appinsights_cs }}"
+          MAPS_KEY="${{ steps.res.outputs.maps_key }}"
 
-          # Save existing env vars to avoid reset on image update
-          CURRENT_ENV=$(az containerapp show \
-            --name "$CA" --resource-group "$RG" \
-            --query "properties.template.containers[0].env" -o json 2>/dev/null || echo "[]")
+          # Determine Container App name
+          CA="${{ steps.res.outputs.container_app }}"
+          if [[ -z "$CA" ]]; then
+            CA="${{ steps.res.outputs.container_app_expected }}"
+            echo "No existing Container App found — will create: $CA"
+            CREATE_MODE=true
+          else
+            echo "Found existing Container App: $CA"
+            CREATE_MODE=false
+          fi
 
-          get_env_val() {
-            echo "$CURRENT_ENV" | jq -r --arg n "$1" '.[] | select(.name == $n) | .value // ""'
-          }
-
-          PORT=$(get_env_val PORT); PORT="${PORT:-8080}"
-          STAC=$(get_env_val STAC_API_URL); STAC="${STAC:-https://planetarycomputer.microsoft.com/api/stac/v1}"
-          CORS=$(get_env_val CORS_ORIGINS); CORS="${CORS:-*}"
-          OAI_EP=$(get_env_val AZURE_OPENAI_ENDPOINT)
-          APPINS=$(get_env_val APPLICATION_INSIGHTS_CONNECTION_STRING)
-          MAPS_KEY=$(get_env_val AZURE_MAPS_SUBSCRIPTION_KEY)
-
+          # Build env var list
           ENV_VARS=(
-            "PORT=$PORT"
-            "STAC_API_URL=$STAC"
-            "CORS_ORIGINS=$CORS"
+            "PORT=8080"
+            "STAC_API_URL=https://planetarycomputer.microsoft.com/api/stac/v1"
+            "CORS_ORIGINS=*"
             "USE_MANAGED_IDENTITY=true"
           )
           [[ -n "$OAI_EP"   ]] && ENV_VARS+=("AZURE_OPENAI_ENDPOINT=$OAI_EP")
           [[ -n "$APPINS"   ]] && ENV_VARS+=("APPLICATION_INSIGHTS_CONNECTION_STRING=$APPINS")
           [[ -n "$MAPS_KEY" ]] && ENV_VARS+=("AZURE_MAPS_SUBSCRIPTION_KEY=$MAPS_KEY")
 
-          az containerapp update \
-            --name "$CA" \
-            --resource-group "$RG" \
-            --image "${REGISTRY}.azurecr.io/earthcopilot-api:${IMAGE_TAG}" \
-            --set-env-vars "${ENV_VARS[@]}" \
-            --output none
+          if [[ "$CREATE_MODE" == "true" ]]; then
+            # Initial creation
+            az containerapp create \
+              --name "$CA" \
+              --resource-group "$RG" \
+              --environment "$CAE" \
+              --registry-server "${REGISTRY}.azurecr.io" \
+              --registry-identity system \
+              --image "${REGISTRY}.azurecr.io/earthcopilot-api:${IMAGE_TAG}" \
+              --ingress external \
+              --target-port 8080 \
+              --min-replicas 1 \
+              --max-replicas 3 \
+              --cpu 1.0 \
+              --memory 2.0Gi \
+              --set-env-vars "${ENV_VARS[@]}" \
+              --output none
+
+            # Grant AcrPull role to the Container App's managed identity
+            sleep 10
+            PRINCIPAL_ID=$(az containerapp show --name "$CA" --resource-group "$RG" \
+              --query "identity.principalId" -o tsv)
+            ACR_ID=$(az acr show --name "$REGISTRY" --resource-group "$RG" --query "id" -o tsv)
+            az role assignment create \
+              --assignee-object-id "$PRINCIPAL_ID" \
+              --assignee-principal-type ServicePrincipal \
+              --role AcrPull \
+              --scope "$ACR_ID" \
+              --output none || true
+          else
+            # Subsequent updates
+            az containerapp update \
+              --name "$CA" \
+              --resource-group "$RG" \
+              --image "${REGISTRY}.azurecr.io/earthcopilot-api:${IMAGE_TAG}" \
+              --set-env-vars "${ENV_VARS[@]}" \
+              --output none
+          fi
 
           FQDN=$(az containerapp show --name "$CA" --resource-group "$RG" \
             --query "properties.configuration.ingress.fqdn" -o tsv)
