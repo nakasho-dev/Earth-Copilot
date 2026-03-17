@@ -160,13 +160,39 @@ jobs:
         run: |
           IMAGE_TAG=$(date +%Y%m%d%H%M%S)
           echo "IMAGE_TAG=$IMAGE_TAG" >> "$GITHUB_ENV"
+          REGISTRY="${{ steps.res.outputs.registry }}"
 
+          # Temporarily open ACR firewall so ACR Tasks can run
+          # (Private endpoint is on, defaultAction=Deny by default)
+          echo "Opening ACR firewall for build..."
+          az acr update \
+            --name "$REGISTRY" \
+            --default-action Allow \
+            --output none
+
+          # Small wait for firewall rule to propagate
+          sleep 15
+
+          # Build via ACR Tasks (runs inside Azure)
           az acr build \
-            --registry "${{ steps.res.outputs.registry }}" \
+            --registry "$REGISTRY" \
             --image "earthcopilot-api:${IMAGE_TAG}" \
             --image "earthcopilot-api:latest" \
             --file "earth-copilot/container-app/Dockerfile.complete" \
-            earth-copilot/
+            earth-copilot/ || BUILD_FAILED=true
+
+          # Re-lock ACR firewall regardless of build result
+          echo "Re-locking ACR firewall..."
+          az acr update \
+            --name "$REGISTRY" \
+            --default-action Deny \
+            --output none
+
+          # Fail now if build failed
+          if [[ "${BUILD_FAILED:-}" == "true" ]]; then
+            echo "ACR build failed"
+            exit 1
+          fi
 
       - name: "Update Container App (atomic: image + env vars)"
         id: deploy-ca
