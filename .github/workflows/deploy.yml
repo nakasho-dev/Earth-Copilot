@@ -461,6 +461,23 @@ jobs:
           fi
 
           if [[ -n "$CA" ]]; then
+            CA_FQDN=$(az containerapp show --name "$CA" --resource-group "$RG" \
+              --query "properties.configuration.ingress.fqdn" -o tsv)
+            CA_REDIRECT_URI="https://${CA_FQDN}/.auth/login/aad/callback"
+
+            # Collect existing redirect URIs and add the new one
+            EXISTING_URIS=$(az ad app show --id "$AUTH_CLIENT_ID" \
+              --query "web.redirectUris" -o tsv 2>/dev/null | tr '\n' ' ')
+            ALL_URIS="$CA_REDIRECT_URI"
+            for uri in $EXISTING_URIS; do
+              [[ "$uri" != "$CA_REDIRECT_URI" ]] && ALL_URIS="$ALL_URIS $uri"
+            done
+
+            az ad app update \
+              --id "$AUTH_CLIENT_ID" \
+              --web-redirect-uris $ALL_URIS 2>/dev/null || \
+              echo "Warning: could not update redirect URI"
+
             az containerapp auth update \
               --name "$CA" --resource-group "$RG" \
               --unauthenticated-client-action RedirectToLoginPage \
@@ -473,7 +490,7 @@ jobs:
               --tenant-id "$TENANT_ID" \
               --output none
 
-            echo "✅ Container App auth configured: $CA"
+            echo "✅ Container App auth configured: $CA (redirect: $CA_REDIRECT_URI)"
           fi
 
   # ─────────────────────────────────────────────────────────
