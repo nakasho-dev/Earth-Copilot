@@ -328,8 +328,13 @@ jobs:
           RG="${RG:-rg-${PROJECT}}"
           echo "resource_group=$RG" >> "$GITHUB_OUTPUT"
 
-          WEBAPP=$(az webapp list --resource-group "$RG" --query "[0].name" -o tsv 2>/dev/null)
+          # Derive token from Container Apps Environment name (cae-<token>)
+          CAE=$(az containerapp env list --resource-group "$RG" --query "[0].name" -o tsv 2>/dev/null)
+          TOKEN="${CAE#cae-}"
+          WEBAPP="app-web-${TOKEN}"
+          PLAN="plan-web-${TOKEN}"
           echo "webapp=$WEBAPP" >> "$GITHUB_OUTPUT"
+          echo "plan=$PLAN"     >> "$GITHUB_OUTPUT"
 
           # Prefer backend FQDN from upstream job, fallback to Azure discovery
           BACKEND_FQDN="${{ needs.deploy-backend.outputs.container_app_fqdn }}"
@@ -355,7 +360,43 @@ jobs:
         run: |
           RG="${{ steps.res.outputs.resource_group }}"
           WEBAPP="${{ steps.res.outputs.webapp }}"
+          PLAN="${{ steps.res.outputs.plan }}"
+          LOCATION=$(az group show --name "$RG" --query "location" -o tsv)
 
+          # Create App Service Plan if not exists
+          if ! az appservice plan show --name "$PLAN" --resource-group "$RG" &>/dev/null; then
+            echo "Creating App Service Plan: $PLAN"
+            az appservice plan create \
+              --name "$PLAN" \
+              --resource-group "$RG" \
+              --location "$LOCATION" \
+              --sku S1 \
+              --is-linux \
+              --output none
+          fi
+
+          # Create Web App if not exists
+          if ! az webapp show --name "$WEBAPP" --resource-group "$RG" &>/dev/null; then
+            echo "Creating Web App: $WEBAPP"
+            az webapp create \
+              --name "$WEBAPP" \
+              --resource-group "$RG" \
+              --plan "$PLAN" \
+              --runtime "NODE:20-lts" \
+              --output none
+            az webapp config set \
+              --name "$WEBAPP" \
+              --resource-group "$RG" \
+              --startup-file "node server.cjs" \
+              --output none
+            az webapp config appsettings set \
+              --name "$WEBAPP" \
+              --resource-group "$RG" \
+              --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false PORT=8080 \
+              --output none
+          fi
+
+          # server.cjs is already in dist/ (copied from public/ by Vite build)
           cd dist && zip -r ../deploy.zip . && cd ..
 
           az webapp deploy \
