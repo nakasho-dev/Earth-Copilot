@@ -126,7 +126,17 @@ class EntraAuthMiddleware(BaseHTTPMiddleware):
         if not self._enabled:
             return await call_next(request)
 
-        # --- Extract Bearer token ---
+        # --- Trust EasyAuth-injected identity (Container Apps / App Service EasyAuth) ---
+        # When EasyAuth is enabled, authenticated browser requests carry the
+        # X-MS-CLIENT-PRINCIPAL header, which is set exclusively by the EasyAuth
+        # middleware and stripped from any client-supplied values (cannot be forged).
+        # EasyAuth has already validated the session/token upstream, so we trust it.
+        if request.headers.get("X-MS-CLIENT-PRINCIPAL"):
+            principal_name = request.headers.get("X-MS-CLIENT-PRINCIPAL-NAME", "unknown")
+            logger.debug(f"[AUTH] OK (EasyAuth) — user={principal_name} on {path}")
+            return await call_next(request)
+
+        # --- Extract Bearer token (direct API calls with explicit token) ---
         auth_header = request.headers.get("Authorization", "")
         if not auth_header.startswith("Bearer "):
             logger.warning(f"[AUTH] 401 — missing Bearer token on {request.method} {path}")

@@ -245,6 +245,7 @@ jobs:
             "STAC_API_URL=https://planetarycomputer.microsoft.com/api/stac/v1"
             "CORS_ORIGINS=*"
             "USE_MANAGED_IDENTITY=true"
+            "DISABLE_AUTH=true"
           )
           [[ -n "$OAI_EP"      ]] && ENV_VARS+=("AZURE_OPENAI_ENDPOINT=$OAI_EP")
           [[ -n "$APPINS"      ]] && ENV_VARS+=("APPLICATION_INSIGHTS_CONNECTION_STRING=$APPINS")

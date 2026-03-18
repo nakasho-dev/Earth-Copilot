@@ -51,11 +51,15 @@ export async function getAuthToken(): Promise<string | null> {
     if (!response.ok) return null;
 
     const data = await response.json();
-    const idToken = data?.[0]?.id_token;
-    if (idToken) {
-      cachedToken = idToken;
+
+    // Container Apps EasyAuth may return id_token or access_token depending
+    // on the token store configuration. Try id_token first, then access_token.
+    // The backend accepts both as valid Bearer tokens.
+    const token = data?.[0]?.id_token ?? data?.[0]?.access_token;
+    if (token) {
+      cachedToken = token;
       // Use actual JWT expiry if available, otherwise assume 1 hour
-      const exp = getTokenExp(idToken);
+      const exp = getTokenExp(token);
       tokenExpiry = exp > 0 ? exp : Date.now() + 55 * 60 * 1000;
       return cachedToken;
     }
