@@ -453,7 +453,7 @@ jobs:
             echo "✅ App Service auth configured: $WEBAPP"
           fi
 
-          # ── Backend: Container App (return 401 for unauthenticated) ──
+          # ── Backend: Container App (redirect to login for unauthenticated) ──
           CA=$(az containerapp list --resource-group "$RG" \
             --query "[?contains(name,'api') || contains(name,'backend')].name | [0]" -o tsv 2>/dev/null)
           if [[ -z "$CA" ]]; then
@@ -463,7 +463,7 @@ jobs:
           if [[ -n "$CA" ]]; then
             az containerapp auth update \
               --name "$CA" --resource-group "$RG" \
-              --unauthenticated-client-action Return401 \
+              --unauthenticated-client-action RedirectToLoginPage \
               --enabled true \
               --output none
 
