@@ -328,89 +328,35 @@ jobs:
           RG="${RG:-rg-${PROJECT}}"
           echo "resource_group=$RG" >> "$GITHUB_OUTPUT"
 
-          # Derive token from Container Apps Environment name (cae-<token>)
-          CAE=$(az containerapp env list --resource-group "$RG" --query "[0].name" -o tsv 2>/dev/null)
-          TOKEN="${CAE#cae-}"
-          WEBAPP="app-web-${TOKEN}"
-          PLAN="plan-web-${TOKEN}"
-          echo "webapp=$WEBAPP" >> "$GITHUB_OUTPUT"
-          echo "plan=$PLAN"     >> "$GITHUB_OUTPUT"
-
-          # Prefer backend FQDN from upstream job, fallback to Azure discovery
+          # The Container App already serves the React frontend via FastAPI
+          # Use Container App FQDN as the frontend URL
           BACKEND_FQDN="${{ needs.deploy-backend.outputs.container_app_fqdn }}"
           if [[ -z "$BACKEND_FQDN" ]]; then
             BACKEND_FQDN=$(az containerapp list --resource-group "$RG" \
               --query "[0].properties.configuration.ingress.fqdn" -o tsv 2>/dev/null)
           fi
           echo "backend_url=https://${BACKEND_FQDN}" >> "$GITHUB_OUTPUT"
+          echo "frontend_url=https://${BACKEND_FQDN}" >> "$GITHUB_OUTPUT"
 
       - name: Install dependencies
         working-directory: earth-copilot/web-ui
         run: npm ci
 
-      - name: Build production bundle
+      - name: Build production bundle (verify)
         working-directory: earth-copilot/web-ui
         env:
           VITE_API_BASE_URL: ${{ steps.res.outputs.backend_url }}
         run: npm run build
 
-      - name: Package and deploy to App Service
+      - name: Confirm frontend served by Container App
         id: deploy-webapp
-        working-directory: earth-copilot/web-ui
         run: |
-          RG="${{ steps.res.outputs.resource_group }}"
-          WEBAPP="${{ steps.res.outputs.webapp }}"
-          PLAN="${{ steps.res.outputs.plan }}"
-          LOCATION=$(az group show --name "$RG" --query "location" -o tsv)
-
-          # Create App Service Plan if not exists
-          if ! az appservice plan show --name "$PLAN" --resource-group "$RG" &>/dev/null; then
-            echo "Creating App Service Plan: $PLAN"
-            az appservice plan create \
-              --name "$PLAN" \
-              --resource-group "$RG" \
-              --location "$LOCATION" \
-              --sku B1 \
-              --is-linux \
-              --output none
-          fi
-
-          # Create Web App if not exists
-          if ! az webapp show --name "$WEBAPP" --resource-group "$RG" &>/dev/null; then
-            echo "Creating Web App: $WEBAPP"
-            az webapp create \
-              --name "$WEBAPP" \
-              --resource-group "$RG" \
-              --plan "$PLAN" \
-              --runtime "NODE:20-lts" \
-              --output none
-            az webapp config set \
-              --name "$WEBAPP" \
-              --resource-group "$RG" \
-              --startup-file "node server.cjs" \
-              --output none
-            az webapp config appsettings set \
-              --name "$WEBAPP" \
-              --resource-group "$RG" \
-              --settings SCM_DO_BUILD_DURING_DEPLOYMENT=false PORT=8080 \
-              --output none
-          fi
-
-          # server.cjs is already in dist/ (copied from public/ by Vite build)
-          cd dist && zip -r ../deploy.zip . && cd ..
-
-          az webapp deploy \
-            --resource-group "$RG" \
-            --name "$WEBAPP" \
-            --src-path deploy.zip \
-            --type zip \
-            --output none
-
-          WEBAPP_HOST=$(az webapp show \
-            --name "$WEBAPP" --resource-group "$RG" \
-            --query "defaultHostName" -o tsv)
-          echo "webapp_url=https://${WEBAPP_HOST}" >> "$GITHUB_OUTPUT"
-          echo "Frontend URL: https://${WEBAPP_HOST}"
+          # The React frontend is bundled into the Container App Docker image
+          # (Dockerfile.complete copies dist/ to /app/static/, FastAPI serves it)
+          # No separate App Service deployment needed.
+          FRONTEND_URL="${{ steps.res.outputs.frontend_url }}"
+          echo "webapp_url=${FRONTEND_URL}" >> "$GITHUB_OUTPUT"
+          echo "Frontend URL: ${FRONTEND_URL}"
 
   # ─────────────────────────────────────────────────────────
   # JOB 5: Enable Agent Service on AI Foundry
