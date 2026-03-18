@@ -370,7 +370,7 @@ jobs:
               --name "$PLAN" \
               --resource-group "$RG" \
               --location "$LOCATION" \
-              --sku S1 \
+              --sku B1 \
               --is-linux \
               --output none
           fi
