@@ -493,6 +493,16 @@ jobs:
               --enabled true \
               --output none
 
+            # Directly set the secret value via az containerapp secret set first
+            # (az containerapp auth microsoft update --client-secret does NOT reliably
+            # update the actual secret value — it may only update the setting reference)
+            if [[ -n "$AUTH_CLIENT_SECRET" ]]; then
+              az containerapp secret set \
+                --name "$CA" --resource-group "$RG" \
+                --secrets "microsoft-provider-authentication-secret=${AUTH_CLIENT_SECRET}" \
+                --output none 2>/dev/null || true
+            fi
+
             az containerapp auth microsoft update \
               --name "$CA" --resource-group "$RG" \
               --client-id "$AUTH_CLIENT_ID" \
@@ -500,14 +510,22 @@ jobs:
               ${AUTH_CLIENT_SECRET:+--client-secret "$AUTH_CLIENT_SECRET" --yes} \
               --output none
 
-            # Use response_mode=query (GET callback) to avoid SameSite cookie
-            # issues that cause 401 on the form_post (POST) callback
+            # Force a restart so EasyAuth picks up the new secret value
+            ACTIVE_REV=$(az containerapp revision list --name "$CA" --resource-group "$RG" \
+              --query "[?properties.active==\`true\` && properties.trafficWeight==\`100\`].name | [0]" -o tsv 2>/dev/null)
+            [[ -n "$ACTIVE_REV" ]] && \
+              az containerapp revision restart --name "$CA" --resource-group "$RG" \
+                --revision "$ACTIVE_REV" --output none 2>/dev/null || true
+
+            # Set response_mode=query (GET callback) with minimal loginParameters
+            # Avoids the form_post SameSite issue; only response_mode is overridden,
+            # letting EasyAuth use its defaults for response_type and scope.
             SUBSCRIPTION=$(az account show --query id -o tsv)
             az rest \
               --method PUT \
               --uri "https://management.azure.com/subscriptions/${SUBSCRIPTION}/resourceGroups/${RG}/providers/Microsoft.App/containerApps/${CA}/authConfigs/current?api-version=2024-03-01" \
               --headers "Content-Type=application/json" \
-              --body "{\"properties\":{\"platform\":{\"enabled\":true},\"globalValidation\":{\"unauthenticatedClientAction\":\"RedirectToLoginPage\"},\"identityProviders\":{\"azureActiveDirectory\":{\"isAutoProvisioned\":false,\"registration\":{\"clientId\":\"${AUTH_CLIENT_ID}\",\"clientSecretSettingName\":\"microsoft-provider-authentication-secret\",\"openIdIssuer\":\"https://login.microsoftonline.com/${TENANT_ID}/v2.0\"},\"login\":{\"loginParameters\":[\"response_type=code\",\"response_mode=query\",\"scope=openid profile email\"]},\"validation\":{\"allowedAudiences\":[\"${AUTH_CLIENT_ID}\",\"api://${AUTH_CLIENT_ID}\"]}}}}}" \
+              --body "{\"properties\":{\"platform\":{\"enabled\":true},\"globalValidation\":{\"unauthenticatedClientAction\":\"RedirectToLoginPage\"},\"identityProviders\":{\"azureActiveDirectory\":{\"isAutoProvisioned\":false,\"registration\":{\"clientId\":\"${AUTH_CLIENT_ID}\",\"clientSecretSettingName\":\"microsoft-provider-authentication-secret\",\"openIdIssuer\":\"https://login.microsoftonline.com/${TENANT_ID}/v2.0\"},\"login\":{\"loginParameters\":[\"response_mode=query\"]},\"validation\":{\"allowedAudiences\":[\"${AUTH_CLIENT_ID}\",\"api://${AUTH_CLIENT_ID}\"]}}}}}" \
               --output none 2>/dev/null || echo "Warning: could not set loginParameters (non-fatal)"
 
             echo "✅ Container App auth configured: $CA (redirect: $CA_REDIRECT_URI)"
