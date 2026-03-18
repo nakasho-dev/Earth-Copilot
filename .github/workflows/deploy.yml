@@ -500,6 +500,16 @@ jobs:
               ${AUTH_CLIENT_SECRET:+--client-secret "$AUTH_CLIENT_SECRET" --yes} \
               --output none
 
+            # Use response_mode=query (GET callback) to avoid SameSite cookie
+            # issues that cause 401 on the form_post (POST) callback
+            SUBSCRIPTION=$(az account show --query id -o tsv)
+            az rest \
+              --method PUT \
+              --uri "https://management.azure.com/subscriptions/${SUBSCRIPTION}/resourceGroups/${RG}/providers/Microsoft.App/containerApps/${CA}/authConfigs/current?api-version=2024-03-01" \
+              --headers "Content-Type=application/json" \
+              --body "{\"properties\":{\"platform\":{\"enabled\":true},\"globalValidation\":{\"unauthenticatedClientAction\":\"RedirectToLoginPage\"},\"identityProviders\":{\"azureActiveDirectory\":{\"isAutoProvisioned\":false,\"registration\":{\"clientId\":\"${AUTH_CLIENT_ID}\",\"clientSecretSettingName\":\"microsoft-provider-authentication-secret\",\"openIdIssuer\":\"https://login.microsoftonline.com/${TENANT_ID}/v2.0\"},\"login\":{\"loginParameters\":[\"response_type=code\",\"response_mode=query\",\"scope=openid profile email\"]},\"validation\":{\"allowedAudiences\":[\"${AUTH_CLIENT_ID}\",\"api://${AUTH_CLIENT_ID}\"]}}}}}" \
+              --output none 2>/dev/null || echo "Warning: could not set loginParameters (non-fatal)"
+
             echo "✅ Container App auth configured: $CA (redirect: $CA_REDIRECT_URI)"
           fi
 
