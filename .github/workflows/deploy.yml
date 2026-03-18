@@ -215,6 +215,8 @@ jobs:
 
       - name: "Create or Update Container App"
         id: deploy-ca
+        env:
+          AUTH_CLIENT_ID: ${{ secrets.AUTH_CLIENT_ID }}
         run: |
           RG="${{ steps.res.outputs.resource_group }}"
           REGISTRY="${{ steps.res.outputs.registry }}"
@@ -222,6 +224,9 @@ jobs:
           OAI_EP="${{ steps.res.outputs.oai_endpoint }}"
           APPINS="${{ steps.res.outputs.appinsights_cs }}"
           MAPS_KEY="${{ steps.res.outputs.maps_key }}"
+
+          # Get tenant ID for auth middleware
+          TENANT_ID=$(az account show --query tenantId -o tsv)
 
           # Determine Container App name
           CA="${{ steps.res.outputs.container_app }}"
@@ -241,9 +246,11 @@ jobs:
             "CORS_ORIGINS=*"
             "USE_MANAGED_IDENTITY=true"
           )
-          [[ -n "$OAI_EP"   ]] && ENV_VARS+=("AZURE_OPENAI_ENDPOINT=$OAI_EP")
-          [[ -n "$APPINS"   ]] && ENV_VARS+=("APPLICATION_INSIGHTS_CONNECTION_STRING=$APPINS")
-          [[ -n "$MAPS_KEY" ]] && ENV_VARS+=("AZURE_MAPS_SUBSCRIPTION_KEY=$MAPS_KEY")
+          [[ -n "$OAI_EP"      ]] && ENV_VARS+=("AZURE_OPENAI_ENDPOINT=$OAI_EP")
+          [[ -n "$APPINS"      ]] && ENV_VARS+=("APPLICATION_INSIGHTS_CONNECTION_STRING=$APPINS")
+          [[ -n "$MAPS_KEY"    ]] && ENV_VARS+=("AZURE_MAPS_SUBSCRIPTION_KEY=$MAPS_KEY")
+          [[ -n "$TENANT_ID"   ]] && ENV_VARS+=("AZURE_AD_TENANT_ID=$TENANT_ID")
+          [[ -n "$AUTH_CLIENT_ID" ]] && ENV_VARS+=("AZURE_AD_CLIENT_ID=$AUTH_CLIENT_ID")
 
           if [[ "$CREATE_MODE" == "true" ]]; then
             # Initial creation
