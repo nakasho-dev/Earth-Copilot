@@ -409,6 +409,7 @@ jobs:
       - name: Configure EasyAuth (skip if AUTH_CLIENT_ID not set)
         env:
           AUTH_CLIENT_ID: ${{ secrets.AUTH_CLIENT_ID }}
+          AUTH_CLIENT_SECRET: ${{ secrets.AUTH_CLIENT_SECRET }}
         run: |
           if [[ -z "$AUTH_CLIENT_ID" ]]; then
             echo "AUTH_CLIENT_ID not set — skipping authentication configuration"
@@ -488,6 +489,7 @@ jobs:
               --name "$CA" --resource-group "$RG" \
               --client-id "$AUTH_CLIENT_ID" \
               --tenant-id "$TENANT_ID" \
+              ${AUTH_CLIENT_SECRET:+--client-secret "$AUTH_CLIENT_SECRET" --yes} \
               --output none
 
             echo "✅ Container App auth configured: $CA (redirect: $CA_REDIRECT_URI)"
